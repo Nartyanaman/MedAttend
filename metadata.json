@@ -1,0 +1,7 @@
+{
+  "name": "MedAttend – MBBS Attendance Tracker",
+  "description": "An MBBS-specific attendance tracking app designed for Indian medical students to manage Theory, Practical, and Clinical Postings with a built-in safe bunk calculator.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
