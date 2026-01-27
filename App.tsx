@@ -1,8 +1,9 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Subject, Posting, UserSettings, AppState, ComponentType, AttendanceEntry } from './types';
 import { DEFAULT_REQUIRED_PCT } from './Constants/constants';
 import { getAuthState, logoutUser } from './utils/auth';
+import { getUserData, saveUserData, initializeUserData } from './services/databaseService';
 import Layout from './components/Layout';
 import Onboarding from './components/Onboarding';
 import Dashboard from './components/Dashboard';
@@ -20,36 +21,38 @@ import ChangePasswordModal from './components/ChangePasswordModal';
 import DeleteAccountModal from './components/DeleteAccountModal';
 import ChangePhotoModal from './components/ChangePhotoModal';
 
-const STORAGE_KEY = 'medattend_playstore_v1';
+const STORAGE_KEY = 'medattend_playstore_v1'; // Keep for migration/fallback
 
 const App: React.FC = () => {
   const [authState, setAuthState] = useState(() => getAuthState());
   const [showSignUp, setShowSignUp] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
-  const [state, setState] = useState<AppState>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return JSON.parse(saved);
-    return {
-      subjects: [],
-      postings: [],
-      history: [],
-      settings: {
-        name: '',
-        bio: 'Future MD/MS',
-        college: '',
-        year: '1st Prof',
-        onboarded: false,
-        startMode: 'fresh',
-        defaultBaselinePct: 75,
-        defaultAttendedCount: 0,
-        defaultTotalCount: 0,
-        entryType: 'percentage',
-        isMYSY: false,
-        remindersEnabled: true,
-        theme: 'clinical'
-      }
-    };
+  // Default initial state
+  const getDefaultState = (): AppState => ({
+    subjects: [],
+    postings: [],
+    history: [],
+    settings: {
+      name: '',
+      bio: 'Future MD/MS',
+      college: '',
+      year: '1st Prof',
+      onboarded: false,
+      startMode: 'fresh',
+      defaultBaselinePct: 75,
+      defaultAttendedCount: 0,
+      defaultTotalCount: 0,
+      entryType: 'percentage',
+      isMYSY: false,
+      remindersEnabled: true,
+      theme: 'clinical'
+    }
   });
+
+  const [state, setState] = useState<AppState>(getDefaultState);
 
   const [activeTab, setActiveTab] = useState('home');
   const [showOCR, setShowOCR] = useState(false);
@@ -61,9 +64,107 @@ const App: React.FC = () => {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
 
+  // Get userId from username (since using local auth)
+  const getUserId = (): string | null => {
+    return authState.currentUser || null;
+  };
+
+  // Load data from Firebase when user is authenticated
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+    const loadUserData = async () => {
+      const userId = getUserId();
+      
+      if (!userId) {
+        // Not authenticated, use default state
+        setState(getDefaultState());
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        const userData = await getUserData(userId);
+        
+        if (userData) {
+          // Data exists in Firebase, use it
+          setState(userData);
+        } else {
+          // No data in Firebase, try to migrate from localStorage
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+            try {
+              const localData = JSON.parse(saved) as AppState;
+              setState(localData);
+              // Save to Firebase for future use
+              await saveUserData(userId, localData);
+              // Optionally clear localStorage after migration
+              // localStorage.removeItem(STORAGE_KEY);
+            } catch (e) {
+              console.error('Error parsing localStorage data:', e);
+              setState(getDefaultState());
+            }
+          } else {
+            // No data anywhere, use default
+            setState(getDefaultState());
+          }
+        }
+      } catch (error) {
+        console.error('Error loading user data from Firebase:', error);
+        // Fallback to localStorage if Firebase fails
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          try {
+            setState(JSON.parse(saved) as AppState);
+          } catch (e) {
+            setState(getDefaultState());
+          }
+        } else {
+          setState(getDefaultState());
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadUserData();
+  }, [authState.isAuthenticated, authState.currentUser]);
+
+  // Save data to Firebase when state changes (with debounce)
+  useEffect(() => {
+    const userId = getUserId();
+    
+    if (!userId || !authState.isAuthenticated || isLoading) {
+      return;
+    }
+
+    // Clear existing timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    // Debounce saves to avoid too many Firebase writes
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        setIsSaving(true);
+        await saveUserData(userId, state);
+        // Also save to localStorage as backup
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (error) {
+        console.error('Error saving user data to Firebase:', error);
+        // Fallback to localStorage if Firebase fails
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } finally {
+        setIsSaving(false);
+      }
+    }, 1000); // Wait 1 second after last change before saving
+
+    // Cleanup timeout on unmount
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [state, authState.isAuthenticated, isLoading]);
 
   useEffect(() => {
     window.addEventListener('beforeinstallprompt', (e) => {
@@ -84,11 +185,23 @@ const App: React.FC = () => {
     }
   };
 
-  const handleOnboarding = (settings: UserSettings) => {
-    setState(prev => ({ 
-      ...prev, 
-      settings: { ...prev.settings, ...settings, onboarded: true } 
-    }));
+  const handleOnboarding = async (settings: UserSettings) => {
+    const userId = getUserId();
+    const updatedState: AppState = {
+      ...state,
+      settings: { ...state.settings, ...settings, onboarded: true }
+    };
+    
+    setState(updatedState);
+    
+    // Initialize user data in Firebase if this is first time
+    if (userId) {
+      try {
+        await initializeUserData(userId, updatedState);
+      } catch (error) {
+        console.error('Error initializing user data:', error);
+      }
+    }
   };
 
   const handleSignIn = () => {
@@ -102,27 +215,9 @@ const App: React.FC = () => {
   const handleLogout = () => {
     logoutUser();
     setAuthState({ isAuthenticated: false, currentUser: null });
-    // Reset app state
-    setState({
-      subjects: [],
-      postings: [],
-      history: [],
-      settings: {
-        name: '',
-        bio: 'Future MD/MS',
-        college: '',
-        year: '1st Prof',
-        onboarded: false,
-        startMode: 'fresh',
-        defaultBaselinePct: 75,
-        defaultAttendedCount: 0,
-        defaultTotalCount: 0,
-        entryType: 'percentage',
-        isMYSY: false,
-        remindersEnabled: true,
-        theme: 'clinical'
-      }
-    });
+    // Reset app state to default
+    setState(getDefaultState());
+    setIsLoading(false);
   };
 
   const handleProfileAction = (action: 'username' | 'photo' | 'password' | 'logout' | 'delete') => {
@@ -285,6 +380,18 @@ const App: React.FC = () => {
     }));
   };
 
+  // Show loading state while fetching data
+  if (isLoading && authState.isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent mb-4"></div>
+          <p className="text-slate-600 font-medium">Loading your data...</p>
+        </div>
+      </div>
+    );
+  }
+
   // Authentication check
   if (!authState.isAuthenticated) {
     if (showSignUp) {
@@ -306,6 +413,13 @@ const App: React.FC = () => {
       currentUser={authState.currentUser}
       onProfileAction={handleProfileAction}
     >
+      {/* Saving indicator */}
+      {isSaving && (
+        <div className="fixed top-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2 z-50 animate-fadeIn">
+          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+          <span className="text-sm font-medium">Saving...</span>
+        </div>
+      )}
       {activeTab === 'home' && (
         <Dashboard subjects={state.subjects} settings={state.settings} />
       )}
@@ -329,7 +443,11 @@ const App: React.FC = () => {
               {state.subjects.map(s => (
                 <div key={s.id} className="relative group">
                   <button 
-                    onClick={() => confirm("Wipe subject data?") && setState(p => ({...p, subjects: p.subjects.filter(sub => sub.id !== s.id)}))}
+                    onClick={() => {
+                      if (confirm("Wipe subject data?")) {
+                        setState(p => ({...p, subjects: p.subjects.filter(sub => sub.id !== s.id)}));
+                      }
+                    }}
                     className="absolute top-6 right-6 z-10 text-slate-200 hover:text-red-500 p-2 opacity-0 group-hover:opacity-100 transition-opacity"
                   ><i className="fas fa-trash-alt text-xs"></i></button>
                   <SubjectCard 
