@@ -35,6 +35,11 @@ const Dashboard: React.FC<DashboardProps> = ({ subjects, settings }) => {
     return acc + (safeBunks > 0 ? safeBunks : 0);
   }, 0);
 
+  const totalDeficit = allComponents.reduce((acc, c) => {
+    const { safeBunks } = calculateSafeBunks(c.attended, c.total, c.requiredPct);
+    return acc + (safeBunks < 0 ? -safeBunks : 0);
+  }, 0);
+
   const dangerComponents = allComponents.filter(c => {
     const { risk } = calculateSafeBunks(c.attended, c.total, c.requiredPct);
     return risk === RiskLevel.DANGER;
@@ -84,8 +89,13 @@ const Dashboard: React.FC<DashboardProps> = ({ subjects, settings }) => {
                   </div>
                 )}
                 <div className="bg-white/10 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/20">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-blue-100">Bunks: {totalSafeBunks}</p>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-blue-100">Safe to skip: {totalSafeBunks}</p>
                 </div>
+                {totalDeficit > 0 && (
+                  <div className="bg-rose-500/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-rose-300/50">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-white">Deficit: {totalDeficit}</p>
+                  </div>
+                )}
               </div>
             </div>
             
@@ -155,9 +165,10 @@ const Dashboard: React.FC<DashboardProps> = ({ subjects, settings }) => {
               const pct = totalHeld > 0 ? (totalAtt / totalHeld) * 100 : 0;
               
               // Determine overall color based on worst performing component
-              const components = s.components.map(c => calculateSafeBunks(c.attended, c.total, c.requiredPct));
-              const isDanger = components.some(c => c.risk === RiskLevel.DANGER);
-              const isSafe = components.every(c => c.risk === RiskLevel.SAFE);
+              const componentResults = s.components.map(c => calculateSafeBunks(c.attended, c.total, c.requiredPct));
+              const isDanger = componentResults.some(c => c.risk === RiskLevel.DANGER);
+              const isSafe = componentResults.every(c => c.risk === RiskLevel.SAFE);
+              const subjectBunkRemain = componentResults.reduce((sum, c) => sum + c.safeBunks, 0);
 
               return (
                 <div key={s.id} className="space-y-3 group cursor-default">
@@ -173,6 +184,9 @@ const Dashboard: React.FC<DashboardProps> = ({ subjects, settings }) => {
                     <div className="text-right">
                        <p className={`text-xl font-black leading-none tracking-tighter ${isSafe ? 'text-emerald-500' : isDanger ? 'text-rose-500' : 'text-amber-500'}`}>
                         {pct.toFixed(0)}%
+                      </p>
+                      <p className={`text-[10px] font-black uppercase tracking-widest mt-0.5 ${subjectBunkRemain >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {subjectBunkRemain >= 0 ? `Bunks: +${subjectBunkRemain}` : `Deficit: ${-subjectBunkRemain}`}
                       </p>
                     </div>
                   </div>

@@ -108,7 +108,7 @@ const CalendarView: React.FC<CalendarViewProps> = ({ history, subjects, onLogAtt
           <button onClick={nextMonth} className="w-11 h-11 rounded-2xl bg-slate-50 text-slate-400 flex items-center justify-center active:scale-90 border border-slate-100"><i className="fas fa-chevron-right"></i></button>
         </div>
         <div className="grid grid-cols-7 gap-1 mb-4">
-          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => (<div key={d} className="text-center text-[9px] font-black text-slate-300 py-1 uppercase tracking-widest">{d}</div>))}
+          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, idx) => (<div key={`day-${idx}`} className="text-center text-[9px] font-black text-slate-300 py-1 uppercase tracking-widest">{d}</div>))}
         </div>
         <div className="grid grid-cols-7 gap-2">{renderDays()}</div>
         
